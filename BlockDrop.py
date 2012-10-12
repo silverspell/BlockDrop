@@ -6,6 +6,8 @@ Created on 12 Eki 2012
 from twisted.protocols.basic import LineReceiver
 from twisted.internet.protocol import Factory
 import json
+import uuid
+
 
 
 
@@ -18,7 +20,11 @@ class Utils:
     def from_json(s):
         return json.loads(s)
 
+    @staticmethod
+    def get_uuid():
+        return str(uuid.uuid4())
 
+    
 
 
 class BlockDropUser:
