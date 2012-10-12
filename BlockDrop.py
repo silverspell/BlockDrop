@@ -18,6 +18,9 @@ class Utils:
     def from_json(s):
         return json.loads(s)
 
+
+
+
 class BlockDropUser:
     def __init__(self):
         self.email = ""
@@ -28,7 +31,8 @@ class BlockDropUser:
 class BlockDropProto(LineReceiver):
     def __init__(self, factory):
         self.factory = factory
-        self.user = None 
+        self.user = None
+        self.commands = {"subscribe": self.subscribe, "get_friends": self.get_friends}
         
     def connectionMade(self):
         self.factory.players.add(self)
@@ -39,11 +43,19 @@ class BlockDropProto(LineReceiver):
     
     def lineReceived(self, line):
         line = line.strip()
-        cmd = json.loads(line)
+        message = json.loads(line)
+        result_dict = self.commands[message["action"]](message["data"])
+        self.sendLine(Utils.to_json(result_dict))
         
 
+    
+    def subscribe(self, data):
+        pass
 
-        
+
+    def get_friends(self, data=None):
+        pass
+    
 
 class BlockDropFactory(Factory):
     def __init__(self):
