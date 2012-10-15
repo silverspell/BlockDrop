@@ -157,7 +157,8 @@ class BlockDropProto(LineReceiver):
         self.commands = {"subscribe": self.subscribe, "get_friends": self.get_friends, 
                          "login": self.login, "create_room": self.create_room, 
                          "ready": self.ready, "score_send": self.send_score,
-                         "finish": self.finish, "quit": self.quit, "prefs": self.get_prefs}
+                         "finish": self.finish, "quit": self.quit, "prefs": self.get_prefs,
+                         "join": self.join_room}
         
         self.is_logged_in = False
         self.task_id = None
@@ -309,18 +310,11 @@ class BlockDropProto(LineReceiver):
         if self.factory.rooms[self.room_key]["p1"] == self.user.email:
             self.factory.rooms[self.room_key]["score"]["p1"] = data["score"]
             self.factory.rooms[self.room_key]["p1"] = ""
-            if won:
-                winner_score = data["score"]
-            else:
-                winner_score = self.factory.rooms[self.room_key]["score"]["p2"]
+            opponent_score = self.factory.rooms[self.room_key]["score"]["p2"]
         else:
             self.factory.rooms[self.room_key]["score"]["p2"] = data["score"]
             self.factory.rooms[self.room_key]["p2"] = ""
-            if won == "me":
-                winner_score = data["score"]
-            else:
-                winner_score = self.factory.rooms[self.room_key]["score"]["p1"]
-        
+            opponent_score = self.factory.rooms[self.room_key]["score"]["p1"]
                 
         if self.factory.rooms[self.room_key]["p1"] == self.factory.rooms[self.room_key]["p2"] == "":
             del self.factory.rooms[self.room_key]
@@ -331,7 +325,7 @@ class BlockDropProto(LineReceiver):
         Utils.update_user({"email": self.user.email, "score": self.user.score, "facebook_id": self.user.facebook_id})
         
         
-        return {"status": "OK", "data": {"score": self.user.score, "winner": won, "winner_score": winner_score}}
+        return {"status": "OK", "data": {"score": self.user.score, "winner": won, "opponent_score": opponent_score}}
     
     def quit(self, data = None):
         log.msg("Graceful close")
