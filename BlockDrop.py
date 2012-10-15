@@ -14,6 +14,24 @@ from twisted.internet.protocol import Factory
 import hashlib
 from twisted.internet import task, reactor
 from random import choice
+import sys
+
+
+class CheckAuth():
+    def __init__(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
+        
+    def __call__(self, func):
+        def new_f(*args, **kwargs):
+            slf = args[0]
+            if getattr(slf, "is_logged_in"):
+                ret = func(*args, **kwargs)
+            else:
+                ret = {"action": "authenticate"}
+            return ret
+        new_f.__doc__ = func.__doc__
+        return new_f
 
 
 class RedisConnection:
@@ -46,11 +64,11 @@ class Utils:
             log.msg("Duplicate user: %s" % u.email)
             return False
         
-        u.password =  hashlib.sha1(u.password).hexdigest()
+        u.password =  hashlib.sha1(user_dict["password"]).hexdigest()
         u.facebook_id = user_dict["facebook_id"] if user_dict.has_key("facebook_id") else ""
-        u.key = hashlib.sha1("%s:%s" % (u.email, u.password))
         
-        d = {"email": u.email, "password": u.password, "facebook_id": u.facebook_id, "score": u.score, "key": u.key}
+        d = {"email": u.email, "password": u.password, "facebook_id": u.facebook_id, "score": u.score}
+        log.msg(d)
         r.sadd("users", u.email)
         r.set("users:%s"%u.email, Utils.to_json(d))
         return u
@@ -82,7 +100,12 @@ class Utils:
         u = Utils.get_user(user_dict["email"], user_dict["password"])
         if u:
             u["email"] = user_dict["email"]
-            u["password"] = hashlib.sha1(user_dict["password"]).hexdigest()
+            if user_dict.has_key("password"):
+                u["password"] = hashlib.sha1(user_dict["password"]).hexdigest()
+                
+            if user_dict.has_key("score"):
+                u["score"] = user_dict["score"]
+
             u["facebook_id"] = user_dict["facebook_id"]
             r.set("users:%s"%u["email"], Utils.to_json(u))
             return u
@@ -115,7 +138,6 @@ class BlockDropUser:
         self.password = ""
         self.facebook_id = ""
         self.score = 0
-        self.key = ""
     
     @staticmethod
     def from_dict(d):
@@ -124,7 +146,6 @@ class BlockDropUser:
         u.facebook_id = d["facebook_id"] if d.has_key("facebook_id") else ""
         u.password = d["password"] if d.has_key("password") else ""
         u.score = d["score"] if d.has_key("score") else 0
-        u.key = d["key"] if d.has_key("key") else ""
         return u
 
 
@@ -136,32 +157,44 @@ class BlockDropProto(LineReceiver):
         self.commands = {"subscribe": self.subscribe, "get_friends": self.get_friends, 
                          "login": self.login, "create_room": self.create_room, 
                          "ready": self.ready, "score_send": self.send_score,
-                         "end_game": self.end_game}
+                         "finish": self.finish, "quit": self.quit, "prefs": self.get_prefs}
         
+        self.is_logged_in = False
         self.task_id = None
         self.room_key = None
         
     def connectionMade(self):
+        """Called when a client opens a connection"""
         self.factory.players.add(self)
+        j = {"action": "authenticate"}
+        self.sendLine(Utils.to_json(j))
         
     def connectionLost(self, reason = ""):
+        """Called when a client closes a connection """
+        """TO-DO: remove any ongoing games from this."""
         self.factory.players.remove(self)
         
     
     def lineReceived(self, line):
+        """Called when server receives a command"""
         line = line.strip()
         message = json.loads(line)
+        if not message.has_key("data"):
+            message["data"] = None
         result_dict = self.commands[message["action"]](message["data"])
-        self.sendLine(Utils.to_json(result_dict))
+        if result_dict:
+            self.sendLine(Utils.to_json(result_dict))
     
     
     def room_time_out(self):
+        """General timeout function"""
         td = {"status": "FAIL", "data": {"reason": "friend not responded"}}    
         del self.factory.rooms[self.room_key]
         self.sendLine(Utils.to_json(td))
         self.room_key = None
         
     def score_timer(self):
+        """Score sending timeout function"""
         score = (self.factory.rooms[self.room_key]["score"]["p1"] 
                  if self.factory.rooms[self.room_key]["p1"] == self.user.email 
                  else self.factory.rooms[self.room_key]["score"]["p2"])
@@ -170,33 +203,42 @@ class BlockDropProto(LineReceiver):
         self.sendLine(Utils.to_json(j))
     
     def subscribe(self, data):
+        """Called when client sends a subscribe command"""
+        if self.user != None:
+            return {"status": "FAIL", "reason": "Logoff before new subscription"}
+        
         if Utils.new_user(data):
             return {"status": "OK"}
         else:
-            return {"status": "FAIL"}
+            return {"status": "FAIL", "reason": "Email already taken"}
 
     
     def login(self, data):
+        """Login command"""
         u = Utils.get_user(data["email"], data["password"])
         if u:
             self.user = BlockDropUser.from_dict(u)
+            self.is_logged_in = True
             return {"status": "OK", "data": {"score": self.user.score}}
-
+        self.is_logged_in = False
         return {"status": "FAIL"}
             
-
+    @CheckAuth()
     def get_friends(self, data=None):
+        """Gets a list of friend email addresses and returns if they are valid subscribers"""
         friends = Utils.get_friends(data["email_list"])
         return {"status": "OK", "data": friends}
-        
+    
+    @CheckAuth()    
     def create_room(self, data = None):
+        """Creates a room"""
         room = {"p1": self.user.email, "p1_ready": False, "p2": "", "p2_ready": False, "score": {"p1": 0, "p2": 0}}
         self.room_key = Utils.get_uuid()
         self.factory.rooms[self.room_key] = room
-        self.task_id = task.deferLater(reactor, 30, self.room_time_out)
+        self.task_id = task.deferLater(reactor, 45, self.room_time_out)
+        return {"status": "OK", "data": {"room_key": self.room_key}}
     
-    
-    
+    @CheckAuth()
     def join_room(self, data = None):
         """When opponent enters the room.
         1. find your opponent, cancel the timer
@@ -219,8 +261,9 @@ class BlockDropProto(LineReceiver):
         self.task_id = task.deferLater(reactor, 10, self.room_time_out)
         return j
     
+    @CheckAuth()
     def ready(self, data = None):
-        
+        """After both players joined the room, server needs a ready command (for keepalive)"""
         if self.factory.rooms[self.room_key]["p1"] == self.user.email:
             self.factory.rooms[self.room_key]["p1_ready"] = True
         else:
@@ -237,11 +280,12 @@ class BlockDropProto(LineReceiver):
                     u.task_id = task.LoopingCall(self.score_timer)
                     u.task_id.start(3, True)
                     break
+                self.task_id = task.LoopingCall(self.score_timer)
+                self.task_id.start(3, True)
             return {"status": "OK", "data": {"action": "start", "game": Utils.generate_game()}}
-        
         return {"status": "OK", "data": {"action": "wait"}}
         
-            
+    @CheckAuth()
     def send_score(self, data = None):
         """Collects score"""
         if self.factory.rooms[self.room_key]["p1"] == self.user.email:
@@ -251,9 +295,51 @@ class BlockDropProto(LineReceiver):
         
         return {"status": "OK"}
         
+    @CheckAuth()
+    def finish(self, data = None):
+        """Users call finish after they are finished."""
+        self.task_id.cancel()
+        
+        won = False
+        if not self.factory.rooms[self.room_key]["locked"]:
+            won = True
+            self.factory.rooms[self.room_key]["locked"] = True
+        
+        
+        if self.factory.rooms[self.room_key]["p1"] == self.user.email:
+            self.factory.rooms[self.room_key]["score"]["p1"] = data["score"]
+            self.factory.rooms[self.room_key]["p1"] = ""
+            if won:
+                winner_score = data["score"]
+            else:
+                winner_score = self.factory.rooms[self.room_key]["score"]["p2"]
+        else:
+            self.factory.rooms[self.room_key]["score"]["p2"] = data["score"]
+            self.factory.rooms[self.room_key]["p2"] = ""
+            if won == "me":
+                winner_score = data["score"]
+            else:
+                winner_score = self.factory.rooms[self.room_key]["score"]["p1"]
+        
+                
+        if self.factory.rooms[self.room_key]["p1"] == self.factory.rooms[self.room_key]["p2"] == "":
+            del self.factory.rooms[self.room_key]
+        
+        
+        self.room_key = ""
+        self.user.score = self.user.score + data["score"]
+        Utils.update_user({"email": self.user.email, "score": self.user.score, "facebook_id": self.user.facebook_id})
+        
+        
+        return {"status": "OK", "data": {"score": self.user.score, "winner": won, "winner_score": winner_score}}
+    
+    def quit(self, data = None):
+        log.msg("Graceful close")
+        self.transport.loseConnection()
 
-    def end_game(self, data = None):
-        pass
+    @CheckAuth()
+    def get_prefs(self, data = None):
+        return {"status": "OK", "score": self.user.score}
 
 class BlockDropFactory(Factory):
     def __init__(self):
@@ -263,5 +349,6 @@ class BlockDropFactory(Factory):
     def buildProtocol(self, addr):
         return BlockDropProto(self)
     
-
-
+log.startLogging(sys.stdout)
+reactor.listenTCP(1025, BlockDropFactory()) #@UndefinedVariable
+reactor.run() #@UndefinedVariable
