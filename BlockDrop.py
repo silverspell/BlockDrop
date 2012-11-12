@@ -183,6 +183,7 @@ class BlockDropProto(LineReceiver):
         if not message.has_key("data"):
             message["data"] = None
         result_dict = self.commands[message["action"]](message["data"])
+	result_dict["last_cmd"] = message["action"]
         if result_dict:
             self.sendLine(Utils.to_json(result_dict))
     
