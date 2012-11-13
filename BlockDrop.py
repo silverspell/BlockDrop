@@ -107,6 +107,8 @@ class Utils:
                 u["score"] = user_dict["score"]
 
             u["facebook_id"] = user_dict["facebook_id"]
+            u["udid"] = user_dict["udid"] if user_dict["udid"] else u["udid"]
+            u["dev_token"] = user_dict["dev_token"] if user_dict["dev_token"] else u["dev_token"]
             r.set("users:%s"%u["email"], Utils.to_json(u))
             return u
         else:
@@ -119,7 +121,7 @@ class Utils:
         for friend in email_list:
             if r.sismember("users", friend):
                 u = Utils.from_json(r.get("users:%s"%friend))
-                existing.append({"friend": friend, "score": u["score"]})
+                existing.append({"friend": friend, "score": u["score"], "udid": u["udid"], "dev_token": u["dev_token"]})
         return existing
     
     @staticmethod
@@ -183,7 +185,7 @@ class BlockDropProto(LineReceiver):
         if not message.has_key("data"):
             message["data"] = None
         result_dict = self.commands[message["action"]](message["data"])
-	result_dict["last_cmd"] = message["action"]
+        result_dict["last_cmd"] = message["action"]
         if result_dict:
             self.sendLine(Utils.to_json(result_dict))
     
