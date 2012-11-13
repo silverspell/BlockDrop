@@ -223,6 +223,9 @@ class BlockDropProto(LineReceiver):
         if u:
             self.user = BlockDropUser.from_dict(u)
             self.is_logged_in = True
+            u["udid"] = data["udid"]
+            u["dev_token"] = data["dev_token"]
+            Utils.update_user(u)
             return {"status": "OK", "data": {"score": self.user.score}}
         self.is_logged_in = False
         return {"status": "FAIL"}
