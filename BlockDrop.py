@@ -225,7 +225,10 @@ class BlockDropProto(LineReceiver):
             self.is_logged_in = True
             u["udid"] = data["udid"]
             u["dev_token"] = data["dev_token"]
-            Utils.update_user(u)
+            r = RedisConnection.get_connection()
+            u["udid"] = data["udid"] if data["udid"] else u["udid"]
+            u["dev_token"] = data["dev_token"] if data["dev_token"] else u["dev_token"]
+            r.set("users:%s"%u["email"], Utils.to_json(u))
             return {"status": "OK", "data": {"score": self.user.score}}
         self.is_logged_in = False
         return {"status": "FAIL"}
