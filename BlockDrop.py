@@ -67,7 +67,7 @@ class Utils:
         u.password =  hashlib.sha1(user_dict["password"]).hexdigest()
         u.facebook_id = user_dict["facebook_id"] if user_dict.has_key("facebook_id") else ""
         
-        d = {"email": u.email, "password": u.password, "facebook_id": u.facebook_id, "score": u.score}
+        d = {"email": u.email, "password": u.password, "facebook_id": u.facebook_id, "score": u.score, "status": "offline"}
         log.msg(d)
         r.sadd("users", u.email)
         r.set("users:%s"%u.email, Utils.to_json(d))
@@ -89,6 +89,13 @@ class Utils:
             log.msg("No user found: %s"%email)
             return False    
 
+    @staticmethod
+    def find_user_by_email(email):
+        r = RedisConnection.get_connection()
+        u_json = r.get("users:%s"%email)
+        return Utils.from_json(u_json)
+        
+        
 
     @staticmethod
     def is_valid_member(r, email):
@@ -120,8 +127,9 @@ class Utils:
         existing = []
         for friend in email_list:
             if r.sismember("users", friend):
-                u = Utils.from_json(r.get("users:%s"%friend))
-                existing.append({"friend": friend, "score": u["score"], "udid": u["udid"], "dev_token": u["dev_token"]})
+                #u = Utils.from_json(r.get("users:%s"%friend))
+                u = Utils.find_user_by_email(friend)
+                existing.append({"friend": friend, "score": u["score"], "status": u["status"]})
         return existing
     
     @staticmethod
@@ -132,6 +140,15 @@ class Utils:
             sel = choice(la)
             l[sel] = l[sel] + 1
         return l
+    
+    @staticmethod
+    def change_user_status(email, status):
+        r = RedisConnection.get_connection()
+        u = Utils.find_user_by_email(email)
+        if u:
+            u["status"] = status
+            r.set("users:%s"%u["email"], Utils.to_json(u))
+        
     
     
 class BlockDropUser:
@@ -175,6 +192,7 @@ class BlockDropProto(LineReceiver):
     def connectionLost(self, reason = ""):
         """Called when a client closes a connection """
         """TO-DO: remove any ongoing games from this."""
+        Utils.change_user_status(self.user.email, "offline")
         self.factory.players.remove(self)
         
     
@@ -185,8 +203,8 @@ class BlockDropProto(LineReceiver):
         if not message.has_key("data"):
             message["data"] = None
         result_dict = self.commands[message["action"]](message["data"])
-        result_dict["last_cmd"] = message["action"]
         if result_dict:
+            result_dict["last_cmd"] = message["action"]
             self.sendLine(Utils.to_json(result_dict))
     
     
@@ -196,6 +214,7 @@ class BlockDropProto(LineReceiver):
         del self.factory.rooms[self.room_key]
         self.sendLine(Utils.to_json(td))
         self.room_key = None
+        Utils.change_user_status(self.user.email, "online")
         
     def score_timer(self):
         """Score sending timeout function"""
@@ -228,6 +247,7 @@ class BlockDropProto(LineReceiver):
             r = RedisConnection.get_connection()
             u["udid"] = data["udid"] if data["udid"] else u["udid"]
             u["dev_token"] = data["dev_token"] if data["dev_token"] else u["dev_token"]
+            u["status"] = "online" 
             r.set("users:%s"%u["email"], Utils.to_json(u))
             return {"status": "OK", "data": {"score": self.user.score}}
         self.is_logged_in = False
@@ -242,11 +262,22 @@ class BlockDropProto(LineReceiver):
     @CheckAuth()    
     def create_room(self, data = None):
         """Creates a room"""
-        room = {"p1": self.user.email, "p1_ready": False, "p2": "", "p2_ready": False, "score": {"p1": 0, "p2": 0}}
+        room = {"p1": self.user.email, "p1_ready": False, "p2": data["p2"], "p2_ready": False, "score": {"p1": 0, "p2": 0}}
         self.room_key = Utils.get_uuid()
         self.factory.rooms[self.room_key] = room
+        note_sent = False
+        for u in self.factory.players:
+            if u.user.email == data["p2"]:
+                j = {"status": "OK", "data": {"action": "join", "room": self.room_key}}
+                u.sendLine(Utils.to_json(j))
+                note_sent = True
+        if not note_sent:
+            log.msg("PUSH should be sent here")
+        
+        Utils.change_user_status(self.user.email, "ingame")
         self.task_id = task.deferLater(reactor, 45, self.room_time_out)
         return {"status": "OK", "data": {"room_key": self.room_key}}
+        
     
     @CheckAuth()
     def join_room(self, data = None):
@@ -266,7 +297,7 @@ class BlockDropProto(LineReceiver):
                 u.sendLine(Utils.to_json(j))
                 u.task_id = task.deferLater(reactor, 10, self.room_time_out)
                 break
-        
+        Utils.change_user_status(self.user.email, "ingame")
         j = {"status": "OK", "data": {"action": "send_ready"}}
         self.task_id = task.deferLater(reactor, 10, self.room_time_out)
         return j
@@ -332,12 +363,13 @@ class BlockDropProto(LineReceiver):
         self.room_key = ""
         self.user.score = self.user.score + data["score"]
         Utils.update_user({"email": self.user.email, "score": self.user.score, "facebook_id": self.user.facebook_id})
-        
+        Utils.change_user_status(self.user.email, "online")        
         
         return {"status": "OK", "data": {"score": self.user.score, "winner": won, "opponent_score": opponent_score}}
     
     def quit(self, data = None):
         log.msg("Graceful close")
+        Utils.change_user_status(self.user.email, "offline")
         self.transport.loseConnection()
 
     @CheckAuth()
