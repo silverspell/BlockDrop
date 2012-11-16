@@ -15,7 +15,7 @@ from fabric.state import env
 
 def push():
     local("git add *")
-    local("git commit -a")
+    local("git commit")
     local("git push origin master")
     
 def pull():
@@ -30,7 +30,7 @@ def production():
     env.hosts = []
     
 def deploy():
-    sudo("pip install twisted elixir")
+    sudo("pip install twisted redis")
     if exists("/etc/init/blockdrop.conf"):
         sudo("stop blockdrop")
     
