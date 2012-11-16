@@ -361,7 +361,7 @@ class BlockDropProto(LineReceiver):
         
         
         self.room_key = ""
-        self.user.score = self.user.score + data["score"]
+        self.user.score = int(self.user.score) + int(data["score"])
         Utils.update_user({"email": self.user.email, "score": self.user.score, "facebook_id": self.user.facebook_id})
         Utils.change_user_status(self.user.email, "online")        
         
