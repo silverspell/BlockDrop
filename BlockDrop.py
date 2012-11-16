@@ -192,7 +192,8 @@ class BlockDropProto(LineReceiver):
     def connectionLost(self, reason = ""):
         """Called when a client closes a connection """
         """TO-DO: remove any ongoing games from this."""
-        Utils.change_user_status(self.user.email, "offline")
+        if self.user:
+            Utils.change_user_status(self.user.email, "offline")
         self.factory.players.remove(self)
         
     
