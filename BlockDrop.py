@@ -375,7 +375,8 @@ class BlockDropProto(LineReceiver):
     
     def quit(self, data = None):
         log.msg("Graceful close")
-        Utils.change_user_status(self.user.email, "offline")
+        if self.user:
+            Utils.change_user_status(self.user.email, "offline")
         self.transport.loseConnection()
 
     @CheckAuth()
