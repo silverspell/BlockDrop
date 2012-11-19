@@ -200,13 +200,17 @@ class BlockDropProto(LineReceiver):
     def lineReceived(self, line):
         """Called when server receives a command"""
         line = line.strip()
-        message = json.loads(line)
-        if not message.has_key("data"):
-            message["data"] = None
-        result_dict = self.commands[message["action"]](message["data"])
-        if result_dict:
-            result_dict["last_cmd"] = message["action"]
-            self.sendLine(Utils.to_json(result_dict))
+        try:
+            message = json.loads(line)
+            if not message.has_key("data"):
+                message["data"] = None
+            result_dict = self.commands[message["action"]](message["data"])
+            if result_dict:
+                result_dict["last_cmd"] = message["action"]
+                self.sendLine(Utils.to_json(result_dict))
+        except Exception, err:
+            self.sendLine(Utils.to_json({"status": "FAIL", "why": err.message, "s": line}))
+        
     
     
     def room_time_out(self):
