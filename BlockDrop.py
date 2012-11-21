@@ -218,7 +218,7 @@ class BlockDropProto(LineReceiver):
                 
         except Exception, err:
             log.msg(err)
-            self.sendLine(Utils.to_json({"status": "FAIL", "why": err.message, "s": line}))
+            self.sendLine(Utils.to_json({"status": "FAIL", "why": str(err), "s": line}))
         
     
     def wait_room_time_out(self, delay, callback):
@@ -292,7 +292,7 @@ class BlockDropProto(LineReceiver):
     @CheckAuth()    
     def create_room(self, data = None):
         """Creates a room"""
-        room = {"p1": self.user.email, "p1_ready": False, "p2": data["p2"], "p2_ready": False, "score": {"p1": 0, "p2": 0}}
+        room = {"p1": self.user.email, "p1_ready": False, "p2": data["p2"], "p2_ready": False, "score": {"p1": 0, "p2": 0}, "locked": False}
         self.room_key = Utils.get_uuid()
         self.factory.rooms[self.room_key] = room
         note_sent = False
@@ -399,7 +399,11 @@ class BlockDropProto(LineReceiver):
         
         self.room_key = ""
         self.user.score = int(self.user.score) + int(data["score"])
-        Utils.update_user({"email": self.user.email, "score": self.user.score, "facebook_id": self.user.facebook_id})
+        #Utils.update_user({"email": self.user.email, "score": self.user.score, "facebook_id": self.user.facebook_id})
+        temp_user = Utils.find_user_by_email(self.user.email)
+        temp_user["score"] = self.user.score
+        r = RedisConnection.get_connection()
+        r.set("users:%s"%temp_user["email"], Utils.to_json(temp_user))
         Utils.change_user_status(self.user.email, "online")        
         
         return {"status": "OK", "data": {"score": self.user.score, "winner": won, "opponent_score": opponent_score}}
