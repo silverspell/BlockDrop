@@ -36,7 +36,7 @@ class CheckAuth():
 
 class RedisConnection:
     #pool = redis.ConnectionPool(host = "perch.redistogo.com", password="b3d485112308118171792b4dc1e5b4d5", port=9281, db=0)
-    pool = redis.ConnectionPool(host = "localhost", password="b3d485112308118171792b4dc1e5b4d5", port=9281, db=0)
+    pool = redis.ConnectionPool(host = "developer.rpfusion.com", password="b3d485112308118171792b4dc1e5b4d5", port=9281, db=0)
     
     @staticmethod
     def get_connection():
@@ -210,9 +210,17 @@ class BlockDropProto(LineReceiver):
                 result_dict["last_cmd"] = message["action"]
                 self.sendLine(Utils.to_json(result_dict))
         except Exception, err:
+            log.msg(err)
             self.sendLine(Utils.to_json({"status": "FAIL", "why": err.message, "s": line}))
         
     
+    def wait_room_time_out(self, delay, callback):
+        self.task_id = None
+        self.task_id = task.deferLater(reactor, delay, callback)
+        self.task_id.addErrback(self.room_time_out_errback)
+    
+    def room_time_out_errback(self, arg=None):
+        log.msg("Room wait cancelled.")
     
     def room_time_out(self):
         """General timeout function"""
@@ -222,12 +230,21 @@ class BlockDropProto(LineReceiver):
         self.room_key = None
         Utils.change_user_status(self.user.email, "online")
         
+        
+    def start_score_timer(self):
+        self.task_id = None
+        self.task_id = task.LoopingCall(self.score_timer)
+        self.task_id.start(3, True)
+        
     def score_timer(self):
         """Score sending timeout function"""
-        score = (self.factory.rooms[self.room_key]["score"]["p1"] 
-                 if self.factory.rooms[self.room_key]["p1"] == self.user.email 
-                 else self.factory.rooms[self.room_key]["score"]["p2"])
-                
+        if self.factory.rooms[self.room_key]["p1"] == self.user.email:
+            score = self.factory.rooms[self.room_key]["score"]["p2"]
+            log.msg("P1 requested")
+        else:
+            score = self.factory.rooms[self.room_key]["score"]["p1"]
+            log.msg("P2 requested")
+            
         j = {"status": "OK", "data": {"opponent_score": score}}
         self.sendLine(Utils.to_json(j))
     
@@ -282,7 +299,8 @@ class BlockDropProto(LineReceiver):
             log.msg("PUSH should be sent here")
         
         Utils.change_user_status(self.user.email, "ingame")
-        self.task_id = task.deferLater(reactor, 45, self.room_time_out)
+        self.wait_room_time_out(45, self.room_time_out)
+        #self.task_id = task.deferLater(reactor, 45, self.room_time_out)
         return {"status": "OK", "data": {"room_key": self.room_key}}
         
     
@@ -302,11 +320,13 @@ class BlockDropProto(LineReceiver):
                 j = {"status": "OK", "data": {"action": "send_ready"}}
                 u.task_id.cancel()
                 u.sendLine(Utils.to_json(j))
-                u.task_id = task.deferLater(reactor, 10, self.room_time_out)
+                u.wait_room_time_out(10, u.room_time_out)
+                #u.task_id = task.deferLater(reactor, 10, self.room_time_out)
                 break
         Utils.change_user_status(self.user.email, "ingame")
         j = {"status": "OK", "data": {"action": "send_ready"}}
-        self.task_id = task.deferLater(reactor, 10, self.room_time_out)
+        #self.task_id = task.deferLater(reactor, 10, self.room_time_out)
+        self.wait_room_time_out(10, self.room_time_out)
         return j
     
     @CheckAuth()
@@ -325,20 +345,23 @@ class BlockDropProto(LineReceiver):
                     j = {"status": "OK", "data": {"action": "start", "game": Utils.generate_game()}}
                     u.task_id.cancel()
                     u.sendLine(Utils.to_json(j))
-                    u.task_id = task.LoopingCall(self.score_timer)
-                    u.task_id.start(3, True)
+                    u.start_score_timer()
                     break
-                self.task_id = task.LoopingCall(self.score_timer)
-                self.task_id.start(3, True)
+                #self.task_id = task.LoopingCall(self.score_timer)
+                #self.task_id.start(3, True)
+                self.start_score_timer()
             return {"status": "OK", "data": {"action": "start", "game": Utils.generate_game()}}
         return {"status": "OK", "data": {"action": "wait"}}
         
     @CheckAuth()
     def send_score(self, data = None):
         """Collects score"""
+        log.msg("self.user.email is %s "%self.user.email)
         if self.factory.rooms[self.room_key]["p1"] == self.user.email:
+            log.msg("P1 add")
             self.factory.rooms[self.room_key]["score"]["p1"] = data["score"]
         else:
+            log.msg("P2 add")
             self.factory.rooms[self.room_key]["score"]["p2"] = data["score"]
         
         return {"status": "OK"}
