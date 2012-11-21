@@ -203,13 +203,19 @@ class BlockDropProto(LineReceiver):
         line = line.strip()
         try:
             message = json.loads(line)
-            if not message.has_key("data"):
-                message["data"] = None
-            result_dict = self.commands[message["action"]](message["data"])
-            log.msg("Message: %s"%message["action"] )
-            if result_dict:
-                result_dict["last_cmd"] = message["action"]
-                self.sendLine(Utils.to_json(result_dict))
+            
+            if message["action"] != "dummy":
+                
+                if not message.has_key("data"):
+                    message["data"] = None
+                result_dict = self.commands[message["action"]](message["data"])
+                log.msg("Message: %s"%message["action"] )
+                if result_dict:
+                    result_dict["last_cmd"] = message["action"]
+                    self.sendLine(Utils.to_json(result_dict))
+            else:
+                log.msg("waiting for dummy")
+                
         except Exception, err:
             log.msg(err)
             self.sendLine(Utils.to_json({"status": "FAIL", "why": err.message, "s": line}))
