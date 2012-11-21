@@ -35,7 +35,8 @@ class CheckAuth():
 
 
 class RedisConnection:
-    pool = redis.ConnectionPool(host = "perch.redistogo.com", password="b3d485112308118171792b4dc1e5b4d5", port=9281, db=0)
+    #pool = redis.ConnectionPool(host = "perch.redistogo.com", password="b3d485112308118171792b4dc1e5b4d5", port=9281, db=0)
+    pool = redis.ConnectionPool(host = "localhost", password="b3d485112308118171792b4dc1e5b4d5", port=9281, db=0)
     
     @staticmethod
     def get_connection():
