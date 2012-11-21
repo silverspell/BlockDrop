@@ -349,7 +349,7 @@ class BlockDropProto(LineReceiver):
                     break
                 #self.task_id = task.LoopingCall(self.score_timer)
                 #self.task_id.start(3, True)
-                self.start_score_timer()
+            self.start_score_timer()
             return {"status": "OK", "data": {"action": "start", "game": Utils.generate_game()}}
         return {"status": "OK", "data": {"action": "wait"}}
         
@@ -369,7 +369,7 @@ class BlockDropProto(LineReceiver):
     @CheckAuth()
     def finish(self, data = None):
         """Users call finish after they are finished."""
-        self.task_id.cancel()
+        self.task_id.stop()
         
         won = False
         if not self.factory.rooms[self.room_key]["locked"]:
