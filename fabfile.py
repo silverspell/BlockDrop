@@ -30,7 +30,7 @@ def production():
     env.hosts = []
     
 def deploy():
-    sudo("pip install twisted redis")
+    sudo("pip install twisted redis apns")
     if exists("/etc/init/blockdrop.conf"):
         sudo("stop blockdrop")
     

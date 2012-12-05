@@ -12,9 +12,10 @@ from twisted.python import log
 from twisted.protocols.basic import LineReceiver
 from twisted.internet.protocol import Factory
 import hashlib
-from twisted.internet import task, reactor
+from twisted.internet import task, reactor, threads
 from random import choice
 import sys
+from apns import APNs, Payload
 
 
 class CheckAuth():
@@ -150,7 +151,27 @@ class Utils:
             u["status"] = status
             r.set("users:%s"%u["email"], Utils.to_json(u))
         
+    @staticmethod
+    def send_push(from_email, from_fb, to, room_key):
+        apns = APNs(use_sandbox = True, cert_file = "apn_dev_cert.pem", 
+                    key_file = "dev_key_noenc.pem")
+        
+        alert_s = "%s invites you to a BlockDrop challange!"%from_email
+        
+        payload = Payload(alert=alert_s, sound="default", badge=1, 
+                          custom={"status": "OK", "action":"join", 
+                                  "room": room_key, "sender_email": from_email, 
+                                  "sender_fb": from_fb})
+        
+        apns.gateway_server.send_notification(to, payload)
+        return apns.feedback_server.items()
+        
     
+    @staticmethod
+    def push_callback(items):
+        log.msg("Push callback....")
+        for (dev_key, times) in items:
+            log.msg("%s : %d"%(dev_key, times))
     
 class BlockDropUser:
     def __init__(self):
@@ -178,7 +199,7 @@ class BlockDropProto(LineReceiver):
                          "login": self.login, "create_room": self.create_room, 
                          "ready": self.ready, "score_send": self.send_score,
                          "finish": self.finish, "quit": self.quit, "prefs": self.get_prefs,
-                         "join": self.join_room}
+                         "join": self.join_room, "fb_login": self.subscribe_with_facebook}
         
         self.is_logged_in = False
         self.task_id = None
@@ -265,6 +286,15 @@ class BlockDropProto(LineReceiver):
         else:
             return {"status": "FAIL", "reason": "Email already taken"}
 
+    def subscribe_with_facebook(self, data):
+        """called from fb login """
+        result = self.subscribe(data)
+        if result["status"] == "OK":
+            login_data = {"email": data["email"], "password": data["password"], 
+                          "udid": data["udid"], "dev_token": data["dev_token"]}
+            return self.login(login_data)
+        else:
+            return result
     
     def login(self, data):
         """Login command"""
@@ -299,11 +329,22 @@ class BlockDropProto(LineReceiver):
         for u in self.factory.players:
             if not u.user: continue
             if u.user.email == data["p2"]:
-                j = {"status": "OK", "data": {"action": "join", "room": self.room_key}}
+                j = {"status": "OK", "data": {"action": "join", "room": self.room_key, "sender_email": self.user.email, "sender_fb": self.user.facebook_id}}
                 u.sendLine(Utils.to_json(j))
                 note_sent = True
         if not note_sent:
             log.msg("PUSH should be sent here")
+            u = Utils.find_user_by_email(data["p2"])
+            log.msg(Utils.to_json(u))
+            #def send_push(from_email, from_fb, to, room_key):
+            d = threads.deferToThread(Utils.send_push, 
+                                      self.user.email, 
+                                      self.user.facebook_id, 
+                                      u["dev_token"],
+                                      self.room_key)
+            
+            d.addCallback(Utils.push_callback)
+            
         
         Utils.change_user_status(self.user.email, "ingame")
         self.wait_room_time_out(45, self.room_time_out)
