@@ -330,7 +330,9 @@ class BlockDropProto(LineReceiver):
         for u in self.factory.players:
             if not u.user: continue
             if u.user.email == data["p2"]:
-                j = {"status": "OK", "data": {"action": "join", "room": self.room_key, "sender_email": self.user.email, "sender_fb": self.user.facebook_id}}
+                j = {"status": "OK", "data": {"action": "join", "room": self.room_key, 
+                                              "sender_email": self.user.email, 
+                                              "sender_fb": self.user.facebook_id}}
                 u.sendLine(Utils.to_json(j))
                 note_sent = True
         if not note_sent:
