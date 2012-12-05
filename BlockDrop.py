@@ -288,6 +288,7 @@ class BlockDropProto(LineReceiver):
 
     def subscribe_with_facebook(self, data):
         """called from fb login """
+        data["password"] = data["facebook_id"]
         result = self.subscribe(data)
         if result["status"] == "OK":
             login_data = {"email": data["email"], "password": data["password"], 
