@@ -39,7 +39,7 @@ def deploy():
         if exists("BlockDrop.py"):
             sudo("git pull")
         else:
-            sudo("git clone https://silverspell@bitbucket.org/silverspell/blockdrop.git .")
+            sudo("git clone https://silverspell@github.com/silverspell/blockdrop.git .")
             sudo("cp blockdrop.conf /etc/init/")
             sudo("chmod 644 /etc/init/blockdrop.conf")
         
