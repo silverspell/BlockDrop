@@ -262,7 +262,7 @@ class BlockDropProto(LineReceiver):
     def start_score_timer(self):
         self.task_id = None
         self.task_id = task.LoopingCall(self.score_timer)
-        self.task_id.start(3, True)
+        self.task_id.start(3, False)
         
     def score_timer(self):
         """Score sending timeout function"""
