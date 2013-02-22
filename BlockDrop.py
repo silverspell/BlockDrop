@@ -199,7 +199,8 @@ class BlockDropProto(LineReceiver):
                          "login": self.login, "create_room": self.create_room, 
                          "ready": self.ready, "score_send": self.send_score,
                          "finish": self.finish, "quit": self.quit, "prefs": self.get_prefs,
-                         "join": self.join_room, "fb_login": self.subscribe_with_facebook}
+                         "join": self.join_room, "fb_login": self.subscribe_with_facebook,
+						 "reject":self.reject_game}
         
         self.is_logged_in = False
         self.task_id = None
@@ -335,6 +336,7 @@ class BlockDropProto(LineReceiver):
                                               "sender_fb": self.user.facebook_id}}
                 u.sendLine(Utils.to_json(j))
                 note_sent = True
+                break #prevent further looping
         if not note_sent:
             log.msg("PUSH should be sent here")
             u = Utils.find_user_by_email(data["p2"])
@@ -350,7 +352,7 @@ class BlockDropProto(LineReceiver):
             
         
         Utils.change_user_status(self.user.email, "ingame")
-        self.wait_room_time_out(45, self.room_time_out)
+        self.wait_room_time_out(30, self.room_time_out)
         #self.task_id = task.deferLater(reactor, 45, self.room_time_out)
         return {"status": "OK", "data": {"room_key": self.room_key}}
         
@@ -380,6 +382,22 @@ class BlockDropProto(LineReceiver):
         self.wait_room_time_out(10, self.room_time_out)
         return j
     
+	def reject_game(self, data = None):
+		"""When opponent rejects a game
+		1. Find player, cancel timer
+		"""
+		self.room_key = data["key"]
+		other_player = self.factory.rooms[self.room_key]["p1"]
+		for u in self.factory.players:
+			if u.user.email == other_player:
+				j = {"status": "OK", "data": {"action": "cancel"}}
+				u.task_id.cancel()
+				u.sendLine(Utils.to_json(j))
+				Utils.change_user_status(other_player, "online")
+				break
+		j = {"status": "OK", "data": {"action": "OK"}}
+		return j
+
     @CheckAuth()
     def ready(self, data = None):
         """After both players joined the room, server needs a ready command (for keepalive)"""
