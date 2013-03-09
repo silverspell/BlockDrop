@@ -179,6 +179,7 @@ class BlockDropUser:
         self.password = ""
         self.facebook_id = ""
         self.score = 0
+        self.status = "online"
     
     @staticmethod
     def from_dict(d):
@@ -187,12 +188,14 @@ class BlockDropUser:
         u.facebook_id = d["facebook_id"] if d.has_key("facebook_id") else ""
         u.password = d["password"] if d.has_key("password") else ""
         u.score = d["score"] if d.has_key("score") else 0
+        u.status = d["status"] if d.has_key("status") else "offline"
         return u
 
 
 
 class BlockDropProto(LineReceiver):
     def __init__(self, factory):
+        self.VERSION = "0.9"
         self.factory = factory
         self.user = None
         self.commands = {"subscribe": self.subscribe, "get_friends": self.get_friends, 
@@ -209,13 +212,33 @@ class BlockDropProto(LineReceiver):
     def connectionMade(self):
         """Called when a client opens a connection"""
         self.factory.players.add(self)
-        j = {"action": "authenticate"}
+        j = {"action": "authenticate", "version": self.VERSION}
         self.sendLine(Utils.to_json(j))
         
     def connectionLost(self, reason = ""):
         """Called when a client closes a connection """
         """TO-DO: remove any ongoing games from this."""
         if self.user:
+            if self.user.status == "ingame":
+                self.task_id.cancel()
+                room = self.factory.rooms[self.room_key]
+                room["locked"] = True
+                if room["p1"] == self.user.email:
+                    room["score"]["p1"] = 0
+                    opponent = self.factory.rooms[self.room_key]["p2"] 
+                else:
+                    room["score"]["p2"] = 0
+                    opponent = self.factory.rooms[self.room_key]["p1"]
+                
+                for u in self.factory.players:
+                    if u.user.email == opponent:
+                        j = {"status": "OK", "data": {"action": "opponent_gone"}}
+                        u.sendLine(Utils.to_json(j))
+            elif self.user.status == "waiting":
+                self.task_id.cancel()
+                if self.factory.rooms.has_key(self.room_key):
+                    del self.factory.rooms[self.room_key]
+                
             Utils.change_user_status(self.user.email, "offline")
         self.factory.players.remove(self)
         
@@ -324,39 +347,20 @@ class BlockDropProto(LineReceiver):
     @CheckAuth()    
     def create_room(self, data = None):
         """Creates a room"""
-        room = {"p1": self.user.email, "p1_ready": False, "p2": data["p2"], "p2_ready": False, "score": {"p1": 0, "p2": 0}, "locked": False}
         self.room_key = Utils.get_uuid()
-        self.factory.rooms[self.room_key] = room
-        note_sent = False
-        for u in self.factory.players:
-            if not u.user: continue
-            if u.user.email == data["p2"]:
-                j = {"status": "OK", "data": {"action": "join", "room": self.room_key, 
-                                              "sender_email": self.user.email, 
-                                              "sender_fb": self.user.facebook_id}}
-                u.sendLine(Utils.to_json(j))
-                note_sent = True
-                break #prevent further looping
-        if not note_sent:
-            log.msg("PUSH should be sent here")
-            u = Utils.find_user_by_email(data["p2"])
-            log.msg(Utils.to_json(u))
-            #def send_push(from_email, from_fb, to, room_key):
-            d = threads.deferToThread(Utils.send_push, 
-                                      self.user.email, 
-                                      self.user.facebook_id, 
-                                      u["dev_token"],
-                                      self.room_key)
-            
+        
+        u = Utils.find_user_by_email(data["p2"])
+        if u["status"] != "ingame" and u["status"] != "waiting":
+            log.msg("Sending push message")
+            d = threads.deferToThread(Utils.send_push, self.user.email, self.user.facebook_id, u["dev_token"], self.room_key)       
             d.addCallback(Utils.push_callback)
-            
+            self.factory.rooms[self.room_key] = {"p1": self.user.email, "p1_ready": False, "p2": data["p2"], "p2_ready": False, "score": {"p1": 0, "p2": 0}, "locked": False}
+            Utils.change_user_status(self.user.email, "waiting")
+            self.wait_room_time_out(30, self.room_time_out)
+            return {"status": "OK", "data": {"room_key": self.room_key}}
+        else:
+            return {"status": "FAIL", "reason": "User unavailable (waiting or ingame)"}
         
-        Utils.change_user_status(self.user.email, "ingame")
-        self.wait_room_time_out(30, self.room_time_out)
-        #self.task_id = task.deferLater(reactor, 45, self.room_time_out)
-        return {"status": "OK", "data": {"room_key": self.room_key}}
-        
-    
     @CheckAuth()
     def join_room(self, data = None):
         """When opponent enters the room.
@@ -366,41 +370,48 @@ class BlockDropProto(LineReceiver):
         data - holds the key for the room
         """
         self.room_key = data["key"]
-        self.factory.rooms[self.room_key]["p2"] = self.user.email
-        opponent = self.factory.rooms[self.room_key]["p1"]
+        
+        if self.factory.rooms.has_key(self.room_key):
+            self.factory.rooms[self.room_key]["p2"] = self.user.email
+            opponent = self.factory.rooms[self.room_key]["p1"]
+            for u in self.factory.players:
+                if u.user.email == opponent:
+                    j = {"status": "OK", "data": {"action": "send_ready"}}
+                    u.task_id.cancel()
+                    u.sendLine(Utils.to_json(j))
+                    u.wait_room_time_out(10, u.room_time_out)
+                    #u.task_id = task.deferLater(reactor, 10, self.room_time_out)
+                    break
+                
+            Utils.change_user_status(self.user.email, "ingame")
+            j = {"status": "OK", "data": {"action": "send_ready"}}
+            #self.task_id = task.deferLater(reactor, 10, self.room_time_out)
+            self.wait_room_time_out(5, self.room_time_out)
+            return j
+        else:
+            return {"status": "FAIL", "reason": "Room already closed, game cancelled"}
+    
+    @CheckAuth()
+    def reject_game(self, data = None):
+        """When opponent rejects a game
+	    1. Find player, cancel timer
+	    """
+        self.room_key = data["key"]
+        other_player = self.factory.rooms[self.room_key]["p1"]
         for u in self.factory.players:
-            if u.user.email == opponent:
-                j = {"status": "OK", "data": {"action": "send_ready"}}
+            if u.user.email == other_player:
+                j = {"status": "OK", "data": {"action": "cancel"}}
                 u.task_id.cancel()
                 u.sendLine(Utils.to_json(j))
-                u.wait_room_time_out(10, u.room_time_out)
-                #u.task_id = task.deferLater(reactor, 10, self.room_time_out)
+                Utils.change_user_status(other_player, "online")
                 break
-        Utils.change_user_status(self.user.email, "ingame")
-        j = {"status": "OK", "data": {"action": "send_ready"}}
-        #self.task_id = task.deferLater(reactor, 10, self.room_time_out)
-        self.wait_room_time_out(10, self.room_time_out)
+        j = {"status": "OK", "data": {"action": "OK"}}
         return j
-    
-	def reject_game(self, data = None):
-		"""When opponent rejects a game
-		1. Find player, cancel timer
-		"""
-		self.room_key = data["key"]
-		other_player = self.factory.rooms[self.room_key]["p1"]
-		for u in self.factory.players:
-			if u.user.email == other_player:
-				j = {"status": "OK", "data": {"action": "cancel"}}
-				u.task_id.cancel()
-				u.sendLine(Utils.to_json(j))
-				Utils.change_user_status(other_player, "online")
-				break
-		j = {"status": "OK", "data": {"action": "OK"}}
-		return j
 
     @CheckAuth()
     def ready(self, data = None):
         """After both players joined the room, server needs a ready command (for keepalive)"""
+        Utils.change_user_status(self.user.email, "ingame")
         if self.factory.rooms[self.room_key]["p1"] == self.user.email:
             self.factory.rooms[self.room_key]["p1_ready"] = True
         else:
@@ -438,24 +449,25 @@ class BlockDropProto(LineReceiver):
     @CheckAuth()
     def finish(self, data = None):
         """Users call finish after they are finished."""
-        self.task_id.stop()
+        self.task_id.cancel()
         
-        won = False
+        will_wait = False
+        #First reporter, will wait.
         if not self.factory.rooms[self.room_key]["locked"]:
-            won = True
+            will_wait = True
             self.factory.rooms[self.room_key]["locked"] = True
         
         
         if self.factory.rooms[self.room_key]["p1"] == self.user.email:
             self.factory.rooms[self.room_key]["score"]["p1"] = data["score"]
-            self.factory.rooms[self.room_key]["p1"] = ""
             opponent_score = self.factory.rooms[self.room_key]["score"]["p2"]
+            opponent = self.factory.rooms[self.room_key]["p2"] 
         else:
             self.factory.rooms[self.room_key]["score"]["p2"] = data["score"]
-            self.factory.rooms[self.room_key]["p2"] = ""
             opponent_score = self.factory.rooms[self.room_key]["score"]["p1"]
-                
-        if self.factory.rooms[self.room_key]["p1"] == self.factory.rooms[self.room_key]["p2"] == "":
+            opponent = self.factory.rooms[self.room_key]["p1"]
+
+        if not will_wait:
             del self.factory.rooms[self.room_key]
         
         
@@ -464,11 +476,32 @@ class BlockDropProto(LineReceiver):
         #Utils.update_user({"email": self.user.email, "score": self.user.score, "facebook_id": self.user.facebook_id})
         temp_user = Utils.find_user_by_email(self.user.email)
         temp_user["score"] = self.user.score
+        if not will_wait:
+            temp_user["status"] = "online"
+        
         r = RedisConnection.get_connection()
         r.set("users:%s"%temp_user["email"], Utils.to_json(temp_user))
-        Utils.change_user_status(self.user.email, "online")        
         
-        return {"status": "OK", "data": {"score": self.user.score, "winner": won, "opponent_score": opponent_score}}
+        if will_wait:
+            return {"status": "OK", "data": {"action": "wait_other"}}
+        else:
+            if int(data["score"]) > int(opponent_score):
+                won = 1
+                o_won = 0
+            elif int(data["score"]) == int(opponent_score):
+                won = 2
+                o_won = 2
+            else:
+                won = 0
+                o_won = 1
+            
+            j = {"status": "OK", "data": {"score": opponent_score, "winner": o_won, "opponent_score": int(data["score"])}}
+            Utils.change_user_status(opponent, "online")
+            for u in self.factory.players:
+                if self.factory.players.user.email == opponent:
+                    u.sendLine(Utils.to_json(j))
+            
+            return {"status": "OK", "data": {"score": int(data["score"]), "winner": won, "opponent_score": opponent_score}}
     
     def quit(self, data = None):
         log.msg("Graceful close")
