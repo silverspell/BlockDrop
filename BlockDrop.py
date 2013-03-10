@@ -13,10 +13,10 @@ from twisted.protocols.basic import LineReceiver
 from twisted.internet.protocol import Factory
 import hashlib
 from twisted.internet import task, reactor, threads
-from random import choice
 import sys
 from apns import APNs, Payload
 
+maint_mode = False
 
 class CheckAuth():
     def __init__(self, *args, **kwargs):
@@ -34,6 +34,25 @@ class CheckAuth():
         new_f.__doc__ = func.__doc__
         return new_f
 
+
+class Maintenance():
+    def __init__(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
+        
+    def __call__(self, func):
+        def new_f(*args, **kwargs):
+            slf = args[0]
+            r = RedisConnection.get_connection()
+            setattr(slf, "maintenance_mode", r.get("bloxmaint"))
+            if getattr(slf, "maintenance_mode") != "ON":
+                ret = func(*args, **kwargs)
+            else:
+                ret = {"action": "stop", "reason": "We're in maintenance... Check shortly"}
+            return ret
+        new_f.__doc__ = func.__doc__
+        return new_f
+        
 
 class RedisConnection:
     #pool = redis.ConnectionPool(host = "perch.redistogo.com", password="b3d485112308118171792b4dc1e5b4d5", port=9281, db=0)
@@ -69,7 +88,8 @@ class Utils:
         u.password =  hashlib.sha1(user_dict["password"]).hexdigest()
         u.facebook_id = user_dict["facebook_id"] if user_dict.has_key("facebook_id") else ""
         
-        d = {"email": u.email, "password": u.password, "facebook_id": u.facebook_id, "score": u.score, "status": "offline"}
+        d = {"email": u.email, "password": u.password, "facebook_id": u.facebook_id, "score": u.score, "status": "offline", 
+            "first_name": u.first_name, "last_name": u.last_name, "fb_username": u.fb_username}
         log.msg(d)
         r.sadd("users", u.email)
         r.set("users:%s"%u.email, Utils.to_json(d))
@@ -118,6 +138,9 @@ class Utils:
             u["facebook_id"] = user_dict["facebook_id"]
             u["udid"] = user_dict["udid"] if user_dict["udid"] else u["udid"]
             u["dev_token"] = user_dict["dev_token"] if user_dict["dev_token"] else u["dev_token"]
+            u["fb_username"] = user_dict["fb_usermaöe"] if user_dict["fb_username"] else u["fb_username"]
+            u["first_name"] = user_dict["first_name"] if user_dict["first_name"] else u["first_name"]
+            u["last_name"] = user_dict["last_name"] if user_dict["last_name"] else u["last_name"]
             r.set("users:%s"%u["email"], Utils.to_json(u))
             return u
         else:
@@ -131,17 +154,9 @@ class Utils:
             if r.sismember("users", friend):
                 #u = Utils.from_json(r.get("users:%s"%friend))
                 u = Utils.find_user_by_email(friend)
-                existing.append({"friend": friend, "score": u["score"], "status": u["status"]})
+                existing.append({"friend": friend, "score": u["score"], "status": u["status"], "fb_username": u["fb_username"], "first_name": u["first_name"], "last_name": u["last_name"]})
         return existing
     
-    @staticmethod
-    def generate_game():
-        l = {"x": 0, "y": 0, "z": 0, "o": 0}
-        la = ["x", "y", "z", "o"]
-        for i in range(1000):
-            sel = choice(la)
-            l[sel] = l[sel] + 1
-        return l
     
     @staticmethod
     def change_user_status(email, status):
@@ -180,6 +195,9 @@ class BlockDropUser:
         self.facebook_id = ""
         self.score = 0
         self.status = "online"
+        self.first_name = ""
+        self.last_name = ""
+        self.fb_username = ""
     
     @staticmethod
     def from_dict(d):
@@ -189,6 +207,9 @@ class BlockDropUser:
         u.password = d["password"] if d.has_key("password") else ""
         u.score = d["score"] if d.has_key("score") else 0
         u.status = d["status"] if d.has_key("status") else "offline"
+        u.first_name = d["first_name"] if d.has_key("first_name") else ""
+        u.last_name = d["last_name"] if d.has_key("last_name") else ""
+        u.fb_username = d["fb_username"] if d.has_key("fb_username") else ""
         return u
 
 
@@ -196,6 +217,7 @@ class BlockDropUser:
 class BlockDropProto(LineReceiver):
     def __init__(self, factory):
         self.VERSION = "0.9"
+        self.maintenance_mode = False
         self.factory = factory
         self.user = None
         self.commands = {"subscribe": self.subscribe, "get_friends": self.get_friends, 
@@ -203,7 +225,7 @@ class BlockDropProto(LineReceiver):
                          "ready": self.ready, "score_send": self.send_score,
                          "finish": self.finish, "quit": self.quit, "prefs": self.get_prefs,
                          "join": self.join_room, "fb_login": self.subscribe_with_facebook,
-						 "reject":self.reject_game}
+						 "reject":self.reject_game, "put_maint": self.to_maint}
         
         self.is_logged_in = False
         self.task_id = None
@@ -212,8 +234,17 @@ class BlockDropProto(LineReceiver):
     def connectionMade(self):
         """Called when a client opens a connection"""
         self.factory.players.add(self)
-        j = {"action": "authenticate", "version": self.VERSION}
-        self.sendLine(Utils.to_json(j))
+        r = RedisConnection.get_connection()
+        self.maintenance_mode = r.get("bloxmaint")
+        if self.maintenance_mode == "ON":
+            j = {"action": "stop", "reason": "We're in maintenance... Check back later... sorry..."}
+            self.sendLine(Utils.to_json(j))
+            self.transport.loseConnection()
+        else:
+            j = {"action": "authenticate", "version": self.VERSION}
+            self.sendLine(Utils.to_json(j))
+        
+        
         
     def connectionLost(self, reason = ""):
         """Called when a client closes a connection """
@@ -300,6 +331,11 @@ class BlockDropProto(LineReceiver):
         j = {"status": "OK", "data": {"opponent_score": score}}
         self.sendLine(Utils.to_json(j))
     
+    def to_maint(self, data = None):
+        r = RedisConnection.get_connection()
+        r.set("bloxmaint", "ON")
+        return {"status": "OK"}
+    
     def subscribe(self, data):
         """Called when client sends a subscribe command"""
         if self.user != None:
@@ -321,6 +357,7 @@ class BlockDropProto(LineReceiver):
         else:
             return result
     
+    @Maintenance()
     def login(self, data):
         """Login command"""
         u = Utils.get_user(data["email"], data["password"])
@@ -337,13 +374,15 @@ class BlockDropProto(LineReceiver):
             return {"status": "OK", "data": {"score": self.user.score}}
         self.is_logged_in = False
         return {"status": "FAIL"}
-            
+    
+    @Maintenance()        
     @CheckAuth()
     def get_friends(self, data=None):
         """Gets a list of friend email addresses and returns if they are valid subscribers"""
         friends = Utils.get_friends(data["email_list"])
         return {"status": "OK", "data": friends}
     
+    @Maintenance()
     @CheckAuth()    
     def create_room(self, data = None):
         """Creates a room"""
@@ -360,7 +399,8 @@ class BlockDropProto(LineReceiver):
             return {"status": "OK", "data": {"room_key": self.room_key}}
         else:
             return {"status": "FAIL", "reason": "User unavailable (waiting or ingame)"}
-        
+    
+    @Maintenance()
     @CheckAuth()
     def join_room(self, data = None):
         """When opponent enters the room.
@@ -391,6 +431,7 @@ class BlockDropProto(LineReceiver):
         else:
             return {"status": "FAIL", "reason": "Room already closed, game cancelled"}
     
+    @Maintenance()
     @CheckAuth()
     def reject_game(self, data = None):
         """When opponent rejects a game
@@ -408,6 +449,7 @@ class BlockDropProto(LineReceiver):
         j = {"status": "OK", "data": {"action": "OK"}}
         return j
 
+    @Maintenance()
     @CheckAuth()
     def ready(self, data = None):
         """After both players joined the room, server needs a ready command (for keepalive)"""
@@ -422,7 +464,7 @@ class BlockDropProto(LineReceiver):
             self.task_id.cancel()
             for u in self.factory.players:
                 if u != self and (u.user.email == self.factory.rooms[self.room_key]["p1"] or u.user.email == self.factory.rooms[self.room_key]["p2"]):
-                    j = {"status": "OK", "data": {"action": "start", "game": Utils.generate_game()}}
+                    j = {"status": "OK", "data": {"action": "start"}}
                     u.task_id.cancel()
                     u.sendLine(Utils.to_json(j))
                     u.start_score_timer()
@@ -430,9 +472,10 @@ class BlockDropProto(LineReceiver):
                 #self.task_id = task.LoopingCall(self.score_timer)
                 #self.task_id.start(3, True)
             self.start_score_timer()
-            return {"status": "OK", "data": {"action": "start", "game": Utils.generate_game()}}
+            return {"status": "OK", "data": {"action": "start"}}
         return {"status": "OK", "data": {"action": "wait"}}
         
+    @Maintenance()
     @CheckAuth()
     def send_score(self, data = None):
         """Collects score"""
@@ -446,6 +489,7 @@ class BlockDropProto(LineReceiver):
         
         return {"status": "OK"}
         
+    @Maintenance()
     @CheckAuth()
     def finish(self, data = None):
         """Users call finish after they are finished."""
@@ -509,6 +553,7 @@ class BlockDropProto(LineReceiver):
             Utils.change_user_status(self.user.email, "offline")
         self.transport.loseConnection()
 
+    @Maintenance()
     @CheckAuth()
     def get_prefs(self, data = None):
         return {"status": "OK", "score": self.user.score}
